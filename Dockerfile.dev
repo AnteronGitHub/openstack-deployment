@@ -1,0 +1,45 @@
+FROM ubuntu:bionic
+
+# Set locale
+ENV LANG C.UTF-8
+
+# Update packages
+RUN apt-get update
+
+# Utility packages
+RUN apt-get install -y \
+    git \
+    tree \
+    vim
+
+# OpenStack clients
+RUN apt-get install -y python3-dev python3-pip
+RUN pip3 install --upgrade pip
+RUN pip3 install python-openstackclient python-heatclient
+
+# Ansible
+RUN apt install -y software-properties-common
+RUN apt-add-repository --yes --update ppa:ansible/ansible
+RUN apt install -y ansible
+
+# Manage users
+ARG DEPLOYER_UID
+ARG DEPLOYER_GID
+
+RUN useradd -m -s /bin/bash -u $DEPLOYER_UID -g $DEPLOYER_GID deployer
+
+# Repository setup
+COPY heat-templates /deploy/heat-templates
+COPY ansible /deploy/ansible
+WORKDIR /deploy
+RUN chown $DEPLOYER_UID:$DEPLOYER_GID -R /deploy
+
+USER deployer
+
+ARG GIT_USER_NAME
+ARG GIT_USER_EMAIL
+
+RUN git config --global user.name "$GIT_USER_NAME"
+RUN git config --global user.email "$GIT_USER_EMAIL"
+
+CMD ["/bin/bash"]
