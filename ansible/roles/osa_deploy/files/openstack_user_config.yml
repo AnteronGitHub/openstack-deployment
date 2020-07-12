@@ -1,0 +1,116 @@
+---
+#
+# Sample configuration for OSA v20.0.0 deployment.
+#
+cidr_networks:
+  container: 172.29.236.0/22
+  tunnel: 172.29.240.0/22
+  storage: 172.29.244.0/22
+
+used_ips:
+  - "172.29.236.1,172.29.236.50"
+  - "172.29.236.100"
+  - "172.29.240.1,172.29.240.50"
+  - "172.29.240.100"
+  - "172.29.244.1,172.29.244.50"
+  - "172.29.244.100"
+  - "172.29.248.1,172.29.248.50"
+  - "172.29.248.100"
+
+global_overrides:
+  internal_lb_vip_address: 172.29.236.100
+  external_lb_vip_address: 172.29.236.100
+  management_bridge: "br-mgmt"
+  provider_networks:
+    - network:
+        container_bridge: "br-mgmt"
+        container_type: "veth"
+        container_interface: "ens3"
+        ip_from_q: "container"
+        type: "raw"
+        group_binds:
+          - all_containers
+          - hosts
+        is_container_address: true
+    - network:
+        container_bridge: "br-vxlan"
+        container_type: "veth"
+        container_interface: "ens4"
+        ip_from_q: "tunnel"
+        type: "vxlan"
+        range: "1:1000"
+        net_name: "vxlan"
+        group_binds:
+          - neutron_linuxbridge_agent
+    - network:
+        container_bridge: "br-storage"
+        container_type: "veth"
+        container_interface: "ens5"
+        ip_from_q: "storage"
+        type: "raw"
+        group_binds:
+          - glance_api
+          - cinder_api
+          - cinder_volume
+          - nova_compute
+          - swift_proxy
+
+# Galera, Memcached, RabbitMQ, Utility host
+shared-infra_hosts:
+  aio1:
+    ip: 172.29.236.100
+
+# Package repository host
+repo-infra_hosts:
+  aio1:
+    ip: 172.29.236.100
+
+# Glance, Nova, Heat API and Horizon host
+os-infra_hosts:
+  aio1:
+    ip: 172.29.236.100
+
+# Keystone
+identity_hosts:
+  aio1:
+    ip: 172.29.236.100
+
+# Neutron
+network_hosts:
+  aio1:
+    ip: 172.29.236.100
+
+# Nova compute
+compute_hosts:
+  aio1:
+    ip: 172.29.236.100
+
+# Cinder API
+storage-infra_hosts:
+  aio1:
+    ip: 172.29.236.100
+
+# Cinder volume service
+storage_hosts:
+  aio1:
+    ip: 172.29.236.100
+    container_vars:
+      cinder_storage_availability_zone: cinderAZ_1
+      cinder_default_availability_zone: cinderAZ_1
+      cinder_backends:
+        lvm:
+          volume_backend_name: LVM_iSCSI
+          volume_driver: cinder.volume.drivers.lvm.LVMVolumeDriver
+          volume_group: cinder-volumes
+          iscsi_ip_address: "{{ cinder_storage_address }}"
+        limit_container_types: cinder_volume
+
+# Rsyslog
+log_hosts:
+  aio1:
+    ip: 172.29.236.100
+
+# Load balancer
+haproxy_hosts:
+  aio1:
+    ip: 172.29.236.100

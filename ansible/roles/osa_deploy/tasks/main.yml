@@ -1,0 +1,21 @@
+---
+- name: Clone OpenStack-Ansible repository
+  git:
+    repo: https://github.com/openstack/openstack-ansible.git
+    version: 20.1.2
+    dest: /opt/openstack-ansible
+
+- name: Ensure openstack_deploy directory exists
+  file:
+    path: /etc/openstack_deploy
+    state: directory
+
+- name: Copy configuration files
+  copy:
+    src: "files/{{ item }}"
+    dest: "/etc/openstack_deploy/{{ item }}"
+  with_items:
+    - openstack_user_config.yml
+    - user_secrets.yml
+    - user_variables.yml
+

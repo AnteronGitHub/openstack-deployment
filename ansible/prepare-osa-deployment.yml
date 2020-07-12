@@ -1,0 +1,6 @@
+---
+- hosts: deploymentservers
+  remote_user: root
+  roles:
+    - osa_deploy
+
