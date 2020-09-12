@@ -9,7 +9,7 @@ cidr_networks:
 
 used_ips:
   - "172.29.236.1,172.29.236.50"
-  - "172.29.236.100"
+  - "172.29.236.100,172.29.236.120"
   - "172.29.240.1,172.29.240.50"
   - "172.29.240.100"
   - "172.29.244.1,172.29.244.50"
@@ -57,42 +57,70 @@ global_overrides:
 
 # Galera, Memcached, RabbitMQ, Utility host
 shared-infra_hosts:
-  aio1:
+  infra1:
     ip: 172.29.236.100
+  infra2:
+    ip: 172.29.236.101
+  infra3:
+    ip: 172.29.236.102
 
 # Package repository host
 repo-infra_hosts:
-  aio1:
+  infra1:
     ip: 172.29.236.100
+  infra2:
+    ip: 172.29.236.101
+  infra3:
+    ip: 172.29.236.102
 
 # Glance, Nova, Heat API and Horizon host
 os-infra_hosts:
-  aio1:
+  infra1:
     ip: 172.29.236.100
+  infra2:
+    ip: 172.29.236.101
+  infra3:
+    ip: 172.29.236.102
 
 # Keystone
 identity_hosts:
-  aio1:
+  infra1:
     ip: 172.29.236.100
+  infra2:
+    ip: 172.29.236.101
+  infra3:
+    ip: 172.29.236.102
 
 # Neutron
 network_hosts:
-  aio1:
+  infra1:
     ip: 172.29.236.100
+  infra2:
+    ip: 172.29.236.101
+  infra3:
+    ip: 172.29.236.102
 
 # Nova compute
 compute_hosts:
-  aio1:
-    ip: 172.29.236.100
+  compute1:
+    ip: 172.29.236.110
+  compute2:
+    ip: 172.29.236.111
+  compute3:
+    ip: 172.29.236.112
 
 # Cinder API
 storage-infra_hosts:
-  aio1:
+  infra1:
     ip: 172.29.236.100
+  infra2:
+    ip: 172.29.236.101
+  infra3:
+    ip: 172.29.236.102
 
 # Cinder volume service
 storage_hosts:
-  aio1:
+  infra1:
     ip: 172.29.236.100
     container_vars:
       cinder_storage_availability_zone: cinderAZ_1
@@ -107,10 +135,18 @@ storage_hosts:
 
 # Rsyslog
 log_hosts:
-  aio1:
+  infra1:
     ip: 172.29.236.100
+  infra2:
+    ip: 172.29.236.101
+  infra3:
+    ip: 172.29.236.102
 
 # Load balancer
 haproxy_hosts:
-  aio1:
+  infra1:
     ip: 172.29.236.100
+  infra2:
+    ip: 172.29.236.101
+  infra3:
+    ip: 172.29.236.102

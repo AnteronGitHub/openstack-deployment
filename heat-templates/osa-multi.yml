@@ -1,0 +1,944 @@
+heat_template_version: 2016-10-14
+
+description: |
+    Heat stack OpenStack-Ansible deployment test setup.
+
+parameters:
+    public_network:
+        type: string
+
+    mgmt_cidr:
+        type: string
+
+    mgmt_gateway_ip:
+        type: string
+
+    dns_nameservers:
+        type: comma_delimited_list
+
+    tunnel_cidr:
+        type: string
+
+    tunnel_gateway_ip:
+        type: string
+
+    storage_cidr:
+        type: string
+
+    storage_gateway_ip:
+        type: string
+
+    timezone:
+        type: string
+
+    deploy_flavor:
+        type: string
+
+    target_flavor:
+        type: string
+
+    deploy_image:
+        type: string
+
+    target_image:
+        type: string
+
+    deployment_private_key:
+        type: string
+
+    deployment_public_key:
+        type: string
+
+    deployment_authorized_key:
+        type: string
+
+    floatingip:
+        type: string
+
+resources:
+
+###############################################################################
+#       Network setup                                                         #
+###############################################################################
+
+    mgmt_network:
+        type: ./common-heat-templates/network/access-net.yaml
+        properties:
+            public_net: { get_param: public_network }
+            cidr: { get_param: mgmt_cidr }
+            gateway_ip: { get_param: mgmt_gateway_ip }
+            dns_nameservers: { get_param: dns_nameservers }
+
+    tunnel_network:
+        type: ./common-heat-templates/network/secondary-net.yaml
+        properties:
+            cidr: { get_param: tunnel_cidr }
+            gateway_ip: { get_param: tunnel_gateway_ip }
+
+    storage_network:
+        type: ./common-heat-templates/network/secondary-net.yaml
+        properties:
+            cidr: { get_param: storage_cidr }
+            gateway_ip: { get_param: storage_gateway_ip }
+
+###############################################################################
+#       Host configuration                                                    #
+###############################################################################
+
+    base_config:
+        type: OS::Heat::CloudConfig
+        properties:
+            cloud_config:
+                final_message: |
+                    Server configured successfully!
+                timezone: { get_param: timezone }
+                package_update: true
+                package_upgrade: true
+                packages:
+                  - bridge-utils
+                  - ifupdown
+                power_state:
+                    mode: reboot
+                    message: Rebooting
+                    timeout: 30
+                    condition: True
+
+    target_packages_config:
+        type: OS::Heat::CloudConfig
+        properties:
+            cloud_config:
+                packages:
+                  - bridge-utils
+                  - debootstrap
+                  - ifenslave
+                  - ifenslave-2.6
+                  - lsof
+                  - lvm2
+                  - chrony
+                  - openssh-server
+                  - sudo
+                  - tcpdump
+                  - vlan
+                  - python
+                  - ifupdown
+
+    disable_netplan:
+        type: OS::Heat::SoftwareConfig
+        properties:
+            config: |
+                #!/bin/sh
+                sudo systemctl stop systemd-networkd.socket systemd-networkd networkd-dispatcher systemd-networkd-wait-online
+                sudo systemctl disable systemd-networkd.socket systemd-networkd networkd-dispatcher systemd-networkd-wait-online
+                sudo systemctl mask systemd-networkd.socket systemd-networkd networkd-dispatcher systemd-networkd-wait-online
+                sudo apt-get --assume-yes purge nplan netplan.io
+
+    deploy_inject_root_private_key:
+        type: ./common-heat-templates/config/inject-root-private-key.yaml
+        properties:
+            private_key: { get_param: deployment_private_key }
+
+    deploy_inject_root_authorized_key:
+        type: ./common-heat-templates/config/inject-root-authorized-key.yaml
+        properties:
+            authorized_key: { get_param: deployment_authorized_key }
+
+    target_inject_root_authorized_key:
+        type: ./common-heat-templates/config/inject-root-authorized-key.yaml
+        properties:
+            authorized_key: { get_param: deployment_public_key }
+
+###############################################################################
+#       Host setup                                                            #
+###############################################################################
+
+# Deployment Host
+    mgmt_port_deploy:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ mgmt_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ mgmt_network, private_subnet ] }
+                ip_address: 172.29.236.50
+
+    floating_ip_association:
+        type: OS::Neutron::FloatingIPAssociation
+        properties:
+            floatingip_id: { get_param: floatingip }
+            port_id: { get_resource: mgmt_port_deploy }
+
+    add_interfaces_deploy:
+        type: OS::Heat::CloudConfig
+        properties:
+            cloud_config:
+                final_message: |
+                    Added interface files successfully!
+                write_files:
+                  - path: /etc/network/interfaces
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto lo
+                        iface lo inet loopback
+
+                        auto ens3
+                        iface ens3 inet manual
+
+                        source /etc/network/interfaces.d/*.cfg
+                  - path: /etc/network/interfaces.d/aio.cfg
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto br-mgmt
+                        iface br-mgmt inet dhcp
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+                            bridge_ports ens3
+
+    host_config_deploy:
+        type: OS::Heat::MultipartMime
+        properties:
+            parts:
+              - config: { get_resource: add_interfaces_deploy }
+              - config: { get_resource: base_config }
+              - config: { get_resource: disable_netplan }
+              - config: { get_resource: deploy_inject_root_private_key }
+              - config: { get_resource: deploy_inject_root_authorized_key }
+
+    osa_host_deploy:
+        type: OS::Nova::Server
+        properties:
+            flavor: { get_param: deploy_flavor }
+            image: { get_param: deploy_image }
+            networks:
+              - port: { get_resource: mgmt_port_deploy }
+            user_data_format: RAW
+            user_data: { get_resource: host_config_deploy }
+
+# Target Host
+    mgmt_port_target:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ mgmt_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ mgmt_network, private_subnet ] }
+                ip_address: 172.29.236.100
+
+    tunnel_port_target:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ tunnel_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ tunnel_network, private_subnet ] }
+                ip_address: 172.29.240.100
+
+    storage_port_target:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ storage_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ storage_network, private_subnet ] }
+                ip_address: 172.29.244.100
+
+    add_interfaces_target:
+        type: OS::Heat::CloudConfig
+        properties:
+            cloud_config:
+                final_message: |
+                    Added interface files successfully!
+                write_files:
+                  - path: /etc/network/interfaces
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto lo
+                        iface lo inet loopback
+
+                        source /etc/network/interfaces.d/*.cfg
+                  - path: /etc/network/interfaces.d/aio.cfg
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto ens3
+                        iface ens3 inet manual
+
+                        auto ens4
+                        iface ens4 inet manual
+
+                        auto ens5
+                        iface ens5 inet manual
+
+                        auto br-mgmt
+                        iface br-mgmt inet static
+                            address 172.29.236.100
+                            netmask 255.255.252.0
+                            gateway 172.29.236.1
+                            dns-nameservers 193.166.4.24
+                            bridge_ports ens3
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-vxlan
+                        iface br-vxlan inet static
+                            address 172.29.240.100
+                            netmask 255.255.252.0
+                            bridge_ports ens4
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-storage
+                        iface br-storage inet static
+                            address 172.29.244.100
+                            netmask 255.255.252.0
+                            bridge_ports ens5
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+    host_config_target:
+        type: OS::Heat::MultipartMime
+        properties:
+            parts:
+              - config: { get_resource: add_interfaces_target }
+              - config: { get_resource: base_config }
+              - config: { get_resource: target_packages_config }
+              - config: { get_resource: disable_netplan }
+              - config: { get_resource: target_inject_root_authorized_key }
+
+    osa_host_target:
+        type: OS::Nova::Server
+        properties:
+            flavor: { get_param: target_flavor }
+            image: { get_param: target_image }
+            networks:
+              - port: { get_resource: mgmt_port_target }
+              - port: { get_resource: tunnel_port_target }
+              - port: { get_resource: storage_port_target }
+            user_data_format: RAW
+            user_data: { get_resource: host_config_target }
+
+# Infra host 2
+    mgmt_port_infra2:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ mgmt_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ mgmt_network, private_subnet ] }
+                ip_address: 172.29.236.101
+
+    tunnel_port_infra2:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ tunnel_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ tunnel_network, private_subnet ] }
+                ip_address: 172.29.240.101
+
+    storage_port_infra2:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ storage_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ storage_network, private_subnet ] }
+                ip_address: 172.29.244.101
+
+    add_interfaces_infra2:
+        type: OS::Heat::CloudConfig
+        properties:
+            cloud_config:
+                final_message: |
+                    Added interface files successfully!
+                write_files:
+                  - path: /etc/network/interfaces
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto lo
+                        iface lo inet loopback
+
+                        source /etc/network/interfaces.d/*.cfg
+                  - path: /etc/network/interfaces.d/aio.cfg
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto ens3
+                        iface ens3 inet manual
+
+                        auto ens4
+                        iface ens4 inet manual
+
+                        auto ens5
+                        iface ens5 inet manual
+
+                        auto br-mgmt
+                        iface br-mgmt inet static
+                            address 172.29.236.101
+                            netmask 255.255.252.0
+                            gateway 172.29.236.1
+                            dns-nameservers 193.166.4.24
+                            bridge_ports ens3
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-vxlan
+                        iface br-vxlan inet static
+                            address 172.29.240.101
+                            netmask 255.255.252.0
+                            bridge_ports ens4
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-storage
+                        iface br-storage inet static
+                            address 172.29.244.101
+                            netmask 255.255.252.0
+                            bridge_ports ens5
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+    host_config_infra2:
+        type: OS::Heat::MultipartMime
+        properties:
+            parts:
+              - config: { get_resource: add_interfaces_infra2 }
+              - config: { get_resource: base_config }
+              - config: { get_resource: target_packages_config }
+              - config: { get_resource: disable_netplan }
+              - config: { get_resource: target_inject_root_authorized_key }
+
+    osa_host_infra2:
+        type: OS::Nova::Server
+        properties:
+            flavor: { get_param: target_flavor }
+            image: { get_param: target_image }
+            networks:
+              - port: { get_resource: mgmt_port_infra2 }
+              - port: { get_resource: tunnel_port_infra2 }
+              - port: { get_resource: storage_port_infra2 }
+            user_data_format: RAW
+            user_data: { get_resource: host_config_infra2 }
+
+# Infra host 2
+    mgmt_port_infra2:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ mgmt_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ mgmt_network, private_subnet ] }
+                ip_address: 172.29.236.101
+
+    tunnel_port_infra2:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ tunnel_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ tunnel_network, private_subnet ] }
+                ip_address: 172.29.240.101
+
+    storage_port_infra2:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ storage_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ storage_network, private_subnet ] }
+                ip_address: 172.29.244.101
+
+    add_interfaces_infra2:
+        type: OS::Heat::CloudConfig
+        properties:
+            cloud_config:
+                final_message: |
+                    Added interface files successfully!
+                write_files:
+                  - path: /etc/network/interfaces
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto lo
+                        iface lo inet loopback
+
+                        source /etc/network/interfaces.d/*.cfg
+                  - path: /etc/network/interfaces.d/aio.cfg
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto ens3
+                        iface ens3 inet manual
+
+                        auto ens4
+                        iface ens4 inet manual
+
+                        auto ens5
+                        iface ens5 inet manual
+
+                        auto br-mgmt
+                        iface br-mgmt inet static
+                            address 172.29.236.101
+                            netmask 255.255.252.0
+                            gateway 172.29.236.1
+                            dns-nameservers 193.166.4.24
+                            bridge_ports ens3
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-vxlan
+                        iface br-vxlan inet static
+                            address 172.29.240.101
+                            netmask 255.255.252.0
+                            bridge_ports ens4
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-storage
+                        iface br-storage inet static
+                            address 172.29.244.101
+                            netmask 255.255.252.0
+                            bridge_ports ens5
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+    host_config_infra2:
+        type: OS::Heat::MultipartMime
+        properties:
+            parts:
+              - config: { get_resource: add_interfaces_infra2 }
+              - config: { get_resource: base_config }
+              - config: { get_resource: target_packages_config }
+              - config: { get_resource: disable_netplan }
+              - config: { get_resource: target_inject_root_authorized_key }
+
+    osa_host_infra2:
+        type: OS::Nova::Server
+        properties:
+            flavor: { get_param: target_flavor }
+            image: { get_param: target_image }
+            networks:
+              - port: { get_resource: mgmt_port_infra2 }
+              - port: { get_resource: tunnel_port_infra2 }
+              - port: { get_resource: storage_port_infra2 }
+            user_data_format: RAW
+            user_data: { get_resource: host_config_infra2 }
+
+# Infra host 3
+    mgmt_port_infra3:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ mgmt_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ mgmt_network, private_subnet ] }
+                ip_address: 172.29.236.102
+
+    tunnel_port_infra3:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ tunnel_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ tunnel_network, private_subnet ] }
+                ip_address: 172.29.240.102
+
+    storage_port_infra3:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ storage_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ storage_network, private_subnet ] }
+                ip_address: 172.29.244.102
+
+    add_interfaces_infra3:
+        type: OS::Heat::CloudConfig
+        properties:
+            cloud_config:
+                final_message: |
+                    Added interface files successfully!
+                write_files:
+                  - path: /etc/network/interfaces
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto lo
+                        iface lo inet loopback
+
+                        source /etc/network/interfaces.d/*.cfg
+                  - path: /etc/network/interfaces.d/aio.cfg
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto ens3
+                        iface ens3 inet manual
+
+                        auto ens4
+                        iface ens4 inet manual
+
+                        auto ens5
+                        iface ens5 inet manual
+
+                        auto br-mgmt
+                        iface br-mgmt inet static
+                            address 172.29.236.102
+                            netmask 255.255.252.0
+                            gateway 172.29.236.1
+                            dns-nameservers 193.166.4.24
+                            bridge_ports ens3
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-vxlan
+                        iface br-vxlan inet static
+                            address 172.29.240.102
+                            netmask 255.255.252.0
+                            bridge_ports ens4
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-storage
+                        iface br-storage inet static
+                            address 172.29.244.102
+                            netmask 255.255.252.0
+                            bridge_ports ens5
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+    host_config_infra3:
+        type: OS::Heat::MultipartMime
+        properties:
+            parts:
+              - config: { get_resource: add_interfaces_infra3 }
+              - config: { get_resource: base_config }
+              - config: { get_resource: target_packages_config }
+              - config: { get_resource: disable_netplan }
+              - config: { get_resource: target_inject_root_authorized_key }
+
+    osa_host_infra3:
+        type: OS::Nova::Server
+        properties:
+            flavor: { get_param: target_flavor }
+            image: { get_param: target_image }
+            networks:
+              - port: { get_resource: mgmt_port_infra3 }
+              - port: { get_resource: tunnel_port_infra3 }
+              - port: { get_resource: storage_port_infra3 }
+            user_data_format: RAW
+            user_data: { get_resource: host_config_infra3 }
+
+# Compute host 1
+    mgmt_port_compute1:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ mgmt_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ mgmt_network, private_subnet ] }
+                ip_address: 172.29.236.110
+
+    tunnel_port_compute1:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ tunnel_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ tunnel_network, private_subnet ] }
+                ip_address: 172.29.240.110
+
+    storage_port_compute1:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ storage_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ storage_network, private_subnet ] }
+                ip_address: 172.29.244.110
+
+    add_interfaces_compute1:
+        type: OS::Heat::CloudConfig
+        properties:
+            cloud_config:
+                final_message: |
+                    Added interface files successfully!
+                write_files:
+                  - path: /etc/network/interfaces
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto lo
+                        iface lo inet loopback
+
+                        source /etc/network/interfaces.d/*.cfg
+                  - path: /etc/network/interfaces.d/aio.cfg
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto ens3
+                        iface ens3 inet manual
+
+                        auto ens4
+                        iface ens4 inet manual
+
+                        auto ens5
+                        iface ens5 inet manual
+
+                        auto br-mgmt
+                        iface br-mgmt inet static
+                            address 172.29.236.110
+                            netmask 255.255.252.0
+                            gateway 172.29.236.1
+                            dns-nameservers 193.166.4.24
+                            bridge_ports ens3
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-vxlan
+                        iface br-vxlan inet static
+                            address 172.29.240.110
+                            netmask 255.255.252.0
+                            bridge_ports ens4
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-storage
+                        iface br-storage inet static
+                            address 172.29.244.110
+                            netmask 255.255.252.0
+                            bridge_ports ens5
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+    host_config_compute1:
+        type: OS::Heat::MultipartMime
+        properties:
+            parts:
+              - config: { get_resource: add_interfaces_compute1 }
+              - config: { get_resource: base_config }
+              - config: { get_resource: target_packages_config }
+              - config: { get_resource: disable_netplan }
+              - config: { get_resource: target_inject_root_authorized_key }
+
+    osa_host_compute1:
+        type: OS::Nova::Server
+        properties:
+            flavor: { get_param: target_flavor }
+            image: { get_param: target_image }
+            networks:
+              - port: { get_resource: mgmt_port_compute1 }
+              - port: { get_resource: tunnel_port_compute1 }
+              - port: { get_resource: storage_port_compute1 }
+            user_data_format: RAW
+            user_data: { get_resource: host_config_compute1 }
+
+# Compute host 2
+    mgmt_port_compute2:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ mgmt_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ mgmt_network, private_subnet ] }
+                ip_address: 172.29.236.111
+
+    tunnel_port_compute2:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ tunnel_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ tunnel_network, private_subnet ] }
+                ip_address: 172.29.240.111
+
+    storage_port_compute2:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ storage_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ storage_network, private_subnet ] }
+                ip_address: 172.29.244.111
+
+    add_interfaces_compute2:
+        type: OS::Heat::CloudConfig
+        properties:
+            cloud_config:
+                final_message: |
+                    Added interface files successfully!
+                write_files:
+                  - path: /etc/network/interfaces
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto lo
+                        iface lo inet loopback
+
+                        source /etc/network/interfaces.d/*.cfg
+                  - path: /etc/network/interfaces.d/aio.cfg
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto ens3
+                        iface ens3 inet manual
+
+                        auto ens4
+                        iface ens4 inet manual
+
+                        auto ens5
+                        iface ens5 inet manual
+
+                        auto br-mgmt
+                        iface br-mgmt inet static
+                            address 172.29.236.111
+                            netmask 255.255.252.0
+                            gateway 172.29.236.1
+                            dns-nameservers 193.166.4.24
+                            bridge_ports ens3
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-vxlan
+                        iface br-vxlan inet static
+                            address 172.29.240.111
+                            netmask 255.255.252.0
+                            bridge_ports ens4
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-storage
+                        iface br-storage inet static
+                            address 172.29.244.111
+                            netmask 255.255.252.0
+                            bridge_ports ens5
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+    host_config_compute2:
+        type: OS::Heat::MultipartMime
+        properties:
+            parts:
+              - config: { get_resource: add_interfaces_compute2 }
+              - config: { get_resource: base_config }
+              - config: { get_resource: target_packages_config }
+              - config: { get_resource: disable_netplan }
+              - config: { get_resource: target_inject_root_authorized_key }
+
+    osa_host_compute2:
+        type: OS::Nova::Server
+        properties:
+            flavor: { get_param: target_flavor }
+            image: { get_param: target_image }
+            networks:
+              - port: { get_resource: mgmt_port_compute2 }
+              - port: { get_resource: tunnel_port_compute2 }
+              - port: { get_resource: storage_port_compute2 }
+            user_data_format: RAW
+            user_data: { get_resource: host_config_compute2 }
+
+# Compute host 3
+    mgmt_port_compute3:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ mgmt_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ mgmt_network, private_subnet ] }
+                ip_address: 172.29.236.112
+
+    tunnel_port_compute3:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ tunnel_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ tunnel_network, private_subnet ] }
+                ip_address: 172.29.240.112
+
+    storage_port_compute3:
+        type: OS::Neutron::Port
+        properties:
+            network: { get_attr: [ storage_network, private_net ] }
+            fixed_ips:
+              - subnet: { get_attr: [ storage_network, private_subnet ] }
+                ip_address: 172.29.244.112
+
+    add_interfaces_compute3:
+        type: OS::Heat::CloudConfig
+        properties:
+            cloud_config:
+                final_message: |
+                    Added interface files successfully!
+                write_files:
+                  - path: /etc/network/interfaces
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto lo
+                        iface lo inet loopback
+
+                        source /etc/network/interfaces.d/*.cfg
+                  - path: /etc/network/interfaces.d/aio.cfg
+                    owner: root:root
+                    permissions: '0644'
+                    content: |
+                        auto ens3
+                        iface ens3 inet manual
+
+                        auto ens4
+                        iface ens4 inet manual
+
+                        auto ens5
+                        iface ens5 inet manual
+
+                        auto br-mgmt
+                        iface br-mgmt inet static
+                            address 172.29.236.112
+                            netmask 255.255.252.0
+                            gateway 172.29.236.1
+                            dns-nameservers 193.166.4.24
+                            bridge_ports ens3
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-vxlan
+                        iface br-vxlan inet static
+                            address 172.29.240.112
+                            netmask 255.255.252.0
+                            bridge_ports ens4
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+                        auto br-storage
+                        iface br-storage inet static
+                            address 172.29.244.112
+                            netmask 255.255.252.0
+                            bridge_ports ens5
+                            bridge_stp off
+                            bridge_waitport 0
+                            bridge_fd 0
+
+    host_config_compute3:
+        type: OS::Heat::MultipartMime
+        properties:
+            parts:
+              - config: { get_resource: add_interfaces_compute3 }
+              - config: { get_resource: base_config }
+              - config: { get_resource: target_packages_config }
+              - config: { get_resource: disable_netplan }
+              - config: { get_resource: target_inject_root_authorized_key }
+
+    osa_host_compute3:
+        type: OS::Nova::Server
+        properties:
+            flavor: { get_param: target_flavor }
+            image: { get_param: target_image }
+            networks:
+              - port: { get_resource: mgmt_port_compute3 }
+              - port: { get_resource: tunnel_port_compute3 }
+              - port: { get_resource: storage_port_compute3 }
+            user_data_format: RAW
+            user_data: { get_resource: host_config_compute3 }
