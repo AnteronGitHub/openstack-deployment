@@ -1,0 +1,3 @@
+[submodule "heat-templates/common-heat-templates"]
+	path = heat-templates/common-heat-templates
+	url = git@github.com:AnteronGitHub/common-heat-templates.git
